@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ragdrift-arize-bridge"
+version = "0.1.0"
+description = "Phoenix-compatible exporter that adds five ragdrift scalars as span attributes."
+readme = "README.md"
+authors = [{ name = "Mukunda Katta" }]
+license = { text = "MIT" }
+requires-python = ">=3.10"
+keywords = ["llm", "rag", "drift", "phoenix", "arize", "observability", "opentelemetry"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+  # The Rust-backed core. PyO3 wheel, ~180ms full report on 10k samples.
+  "ragdrift-py>=0.1.4",
+  "numpy>=1.24",
+  "opentelemetry-api>=1.27",
+  "opentelemetry-sdk>=1.27",
+]
+
+[project.optional-dependencies]
+demo = [
+  # Phoenix exporter — used in the demo agent.
+  "arize-phoenix>=5.0",
+  "openinference-instrumentation>=0.1",
+]
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.10"]
+
+[project.urls]
+Homepage = "https://github.com/MukundaKatta/ragdrift-arize-bridge"
+Repository = "https://github.com/MukundaKatta/ragdrift-arize-bridge"
+"Underlying library" = "https://github.com/MukundaKatta/ragdrift"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
