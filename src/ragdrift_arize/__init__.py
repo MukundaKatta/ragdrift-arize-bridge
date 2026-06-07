@@ -1,7 +1,7 @@
 """ragdrift × Arize bridge.
 
 A thin OpenTelemetry SpanProcessor that batches predictions, runs
-``ragdrift.RagDriftMonitor.evaluate()`` every N batches, and writes the
+``ragdrift.RagDriftMonitor.check()`` every N batches, and writes the
 five scalars onto the next outgoing span as attributes::
 
     otel.attr.drift.embedding = 1.0324
@@ -18,13 +18,21 @@ the math is in Rust (PyO3 binding to ``ragdrift-py``).
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Deque, Sequence
 
 import numpy as np
 
 try:
-    from ragdrift import RagDriftMonitor  # type: ignore[import-untyped]
+    from ragdrift import (  # type: ignore[import-untyped]
+        BaselineSnapshot,
+        ConfidenceDrift,
+        DataDrift,
+        EmbeddingDrift,
+        QueryDrift,
+        RagDriftMonitor,
+        ResponseDrift,
+    )
 except ImportError as e:  # pragma: no cover
     raise RuntimeError(
         "ragdrift-py is required. Install with: pip install ragdrift-py>=0.1.4"
@@ -115,13 +123,34 @@ class DriftSpanProcessor:
 
     def __init__(self, config: DriftConfig) -> None:
         self._config = config
-        self._monitor = RagDriftMonitor(
-            embedding_threshold=config.embedding_threshold,
-            data_threshold=config.data_threshold,
-            response_threshold=config.response_threshold,
-            confidence_threshold=config.confidence_threshold,
-            query_threshold=config.query_threshold,
+
+        # Build the baseline snapshot. Only the fields the user supplied are
+        # populated; ragdrift skips detectors whose baseline is absent.
+        snapshot = BaselineSnapshot(
+            embeddings=config.baseline_embeddings,
+            features=config.baseline_features,
+            response_lengths=config.baseline_response_lengths,
+            confidence_scores=config.baseline_confidence_scores,
+            query_embeddings=config.baseline_query_embeddings,
         )
+
+        # Configure a detector for each dimension whose baseline is present.
+        detectors: dict[str, Any] = {}
+        if config.baseline_embeddings is not None and config.embedding_threshold is not None:
+            detectors["embedding"] = EmbeddingDrift(threshold=config.embedding_threshold)
+        if config.baseline_features is not None and config.data_threshold is not None:
+            detectors["data"] = DataDrift(threshold=config.data_threshold)
+        if config.baseline_response_lengths is not None and config.response_threshold is not None:
+            detectors["response"] = ResponseDrift(threshold=config.response_threshold)
+        if (
+            config.baseline_confidence_scores is not None
+            and config.confidence_threshold is not None
+        ):
+            detectors["confidence"] = ConfidenceDrift(threshold=config.confidence_threshold)
+        if config.baseline_query_embeddings is not None and config.query_threshold is not None:
+            detectors["query"] = QueryDrift(threshold=config.query_threshold)
+
+        self._monitor = RagDriftMonitor(snapshot, **detectors)
         # Sliding window over recent predictions, capped at flush_every*4 so
         # memory stays bounded even with skew between observe() and flush.
         self._buf_emb: Deque[np.ndarray] = deque(maxlen=config.flush_every * 4)
@@ -151,21 +180,20 @@ class DriftSpanProcessor:
     def _refresh(self) -> None:
         if not self._buf_emb:
             return
-        current_emb = np.stack(list(self._buf_emb), axis=0)
+        # The baseline lives in the snapshot the monitor was built with; here we
+        # only pass the current sample window. ragdrift scores a dimension only
+        # when both its baseline and a current array are present.
         kwargs: dict[str, Any] = {
-            "baseline_embeddings": self._config.baseline_embeddings,
-            "current_embeddings": current_emb,
+            "embeddings": np.stack(list(self._buf_emb), axis=0),
         }
         if self._config.baseline_response_lengths is not None and self._buf_resp:
-            kwargs["baseline_response_lengths"] = self._config.baseline_response_lengths
-            kwargs["current_response_lengths"] = np.asarray(list(self._buf_resp), dtype=np.float64)
+            kwargs["response_lengths"] = np.asarray(list(self._buf_resp), dtype=np.float64)
         if self._config.baseline_confidence_scores is not None and self._buf_conf:
-            kwargs["baseline_confidence_scores"] = self._config.baseline_confidence_scores
-            kwargs["current_confidence_scores"] = np.asarray(list(self._buf_conf), dtype=np.float64)
+            kwargs["confidence_scores"] = np.asarray(list(self._buf_conf), dtype=np.float64)
 
-        report = self._monitor.evaluate(**kwargs)
+        report = self._monitor.check(**kwargs)
         for score in report.scores:
-            dim = score.dimension.value
+            dim = score.dimension
             setattr(self._cache, dim, score.score)
             setattr(self._cache, f"{dim}_exceeded", score.exceeded)
 
