@@ -129,3 +129,61 @@ def test_force_flush_returns_true_and_shutdown_is_noop() -> None:
     assert bridge.force_flush() is True
     assert bridge.on_end(FakeSpan()) is None
     assert bridge.shutdown() is None
+
+
+def test_data_dimension_is_scored_when_baseline_present() -> None:
+    """A features baseline plus observed features populates the data scalar."""
+    rng = np.random.default_rng(0)
+    bridge = DriftSpanProcessor(
+        DriftConfig(
+            baseline_embeddings=rng.normal(size=(200, 16)).astype(np.float32),
+            baseline_features=rng.normal(size=(200, 8)).astype(np.float64),
+            embedding_threshold=_EMBEDDING_THRESHOLD,
+            data_threshold=0.10,
+            flush_every=32,
+        )
+    )
+    rng2 = np.random.default_rng(1)
+    for _ in range(64):
+        # Shift the feature distribution so KS/PSI fires on the data dimension.
+        bridge.observe(
+            rng2.normal(size=(16,)).astype(np.float32),
+            features=rng2.normal(loc=3.0, size=(8,)).astype(np.float64),
+        )
+    bridge.force_flush()
+    assert bridge._cache.data > 0.0
+    assert bridge._cache.data_exceeded is True
+
+
+def test_query_dimension_is_scored_when_baseline_present() -> None:
+    """A query_embeddings baseline plus observed query embeddings populates the scalar."""
+    rng = np.random.default_rng(0)
+    bridge = DriftSpanProcessor(
+        DriftConfig(
+            baseline_embeddings=rng.normal(size=(200, 16)).astype(np.float32),
+            baseline_query_embeddings=rng.normal(size=(200, 16)).astype(np.float32),
+            embedding_threshold=_EMBEDDING_THRESHOLD,
+            query_threshold=0.10,
+            flush_every=32,
+        )
+    )
+    rng2 = np.random.default_rng(1)
+    for _ in range(64):
+        # Shift the query distribution so cluster-assignment KL fires.
+        bridge.observe(
+            rng2.normal(size=(16,)).astype(np.float32),
+            query_embedding=rng2.normal(loc=2.0, size=(16,)).astype(np.float32),
+        )
+    bridge.force_flush()
+    assert bridge._cache.query > 0.0
+
+
+def test_flush_every_must_be_positive() -> None:
+    rng = np.random.default_rng(0)
+    with pytest.raises(ValueError):
+        DriftSpanProcessor(
+            DriftConfig(
+                baseline_embeddings=rng.normal(size=(200, 16)).astype(np.float32),
+                flush_every=0,
+            )
+        )

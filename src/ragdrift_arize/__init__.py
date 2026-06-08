@@ -122,6 +122,8 @@ class DriftSpanProcessor:
     """
 
     def __init__(self, config: DriftConfig) -> None:
+        if config.flush_every < 1:
+            raise ValueError(f"flush_every must be >= 1, got {config.flush_every}")
         self._config = config
 
         # Build the baseline snapshot. Only the fields the user supplied are
@@ -156,6 +158,8 @@ class DriftSpanProcessor:
         self._buf_emb: Deque[np.ndarray] = deque(maxlen=config.flush_every * 4)
         self._buf_resp: Deque[float] = deque(maxlen=config.flush_every * 4)
         self._buf_conf: Deque[float] = deque(maxlen=config.flush_every * 4)
+        self._buf_feat: Deque[np.ndarray] = deque(maxlen=config.flush_every * 4)
+        self._buf_query: Deque[np.ndarray] = deque(maxlen=config.flush_every * 4)
         self._cache = _Cache()
 
     # --- ingestion API --------------------------------------------------
@@ -166,6 +170,8 @@ class DriftSpanProcessor:
         *,
         response_length: float | None = None,
         confidence: float | None = None,
+        features: np.ndarray | Sequence[float] | None = None,
+        query_embedding: np.ndarray | Sequence[float] | None = None,
     ) -> None:
         """Record one prediction. Triggers a re-evaluation every ``flush_every``."""
         emb = np.asarray(embedding, dtype=np.float32)
@@ -174,6 +180,10 @@ class DriftSpanProcessor:
             self._buf_resp.append(float(response_length))
         if confidence is not None:
             self._buf_conf.append(float(confidence))
+        if features is not None:
+            self._buf_feat.append(np.asarray(features, dtype=np.float64))
+        if query_embedding is not None:
+            self._buf_query.append(np.asarray(query_embedding, dtype=np.float32))
         if len(self._buf_emb) % self._config.flush_every == 0:
             self._refresh()
 
@@ -190,6 +200,10 @@ class DriftSpanProcessor:
             kwargs["response_lengths"] = np.asarray(list(self._buf_resp), dtype=np.float64)
         if self._config.baseline_confidence_scores is not None and self._buf_conf:
             kwargs["confidence_scores"] = np.asarray(list(self._buf_conf), dtype=np.float64)
+        if self._config.baseline_features is not None and self._buf_feat:
+            kwargs["features"] = np.stack(list(self._buf_feat), axis=0)
+        if self._config.baseline_query_embeddings is not None and self._buf_query:
+            kwargs["query_embeddings"] = np.stack(list(self._buf_query), axis=0)
 
         report = self._monitor.check(**kwargs)
         for score in report.scores:
